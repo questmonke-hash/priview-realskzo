@@ -79,8 +79,8 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "Reel — Media Player" },
-      { name: "description", content: "A cinematic media player for movies, series and anime." },
+      { title: "PriView — Movies, series & anime" },
+      { name: "description", content: "Discover and watch movies, series and anime with PriView." },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
     ],

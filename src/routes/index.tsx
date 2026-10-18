@@ -1,236 +1,166 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, Clapperboard } from "lucide-react";
-import { toast } from "sonner";
-import { VidyPlayer } from "@/components/player/VidyPlayer";
-import { SettingsSheet } from "@/components/player/SettingsSheet";
-import { MediaPicker } from "@/components/player/MediaPicker";
-import { ContinueWatching, Library } from "@/components/player/Shelves";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { SAMPLE_CATALOG, fallbackMedia, findMedia, type MediaItem } from "@/lib/catalog";
-import { titleKey, useHistory, useSettings, type ProgressEntry } from "@/lib/store";
-import { buildEmbedUrl, type MediaType, type PlayerEvent } from "@/lib/vidy";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { useMemo, useState } from "react";
+import { Bookmark, BookmarkCheck, Play, Search, Shuffle } from "lucide-react";
+import { AppHeader } from "@/components/player/AppHeader";
+import { ContinueWatching, Poster } from "@/components/player/Shelves";
+import {
+  SAMPLE_CATALOG, SERVICES, byPopular, byTrending, findMedia, ofType, onService, searchCatalog, similarTo, type MediaItem,
+} from "@/lib/catalog";
+import { titleKey, useBackground, useHistory, useSettings, useWatchlist, type ProgressEntry } from "@/lib/store";
 
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "Reel — Watch movies, series & anime" },
-      { name: "description", content: "A cinematic player for movies, TV series and anime with continue-watching and custom accents." },
-      { property: "og:title", content: "Reel — Watch movies, series & anime" },
-      { property: "og:description", content: "A cinematic player with continue-watching, episode picking and custom accents." },
+      { title: "PriView — Movies, series & anime" },
+      { name: "description", content: "Discover what to watch across streaming services, pick up where you left off and get picks based on what you've watched." },
+      { property: "og:title", content: "PriView — Movies, series & anime" },
       { property: "og:type", content: "website" },
-      { name: "twitter:card", content: "summary_large_image" },
     ],
   }),
-  component: PlayerPage,
+  component: HomePage,
 });
 
-interface Current {
-  media: MediaItem;
-  season: number;
-  episode: number;
-  startAt: number;
+const sizes = { compact: "w-28", comfortable: "w-36", large: "w-48" } as const;
+
+function Row({ title, items, size, wl, onToggle }: { title: string; items: MediaItem[]; size: string; wl: string[]; onToggle: (k: string) => void }) {
+  if (!items.length) return null;
+  return (
+    <section className="animate-reel">
+      <h2 className="mb-3 text-lg font-semibold">{title}</h2>
+      <div className="flex gap-4 overflow-x-auto pb-3">
+        {items.map((m) => {
+          const k = titleKey(m.type, m.id);
+          const saved = wl.includes(k);
+          return (
+            <div key={k} className={`group relative shrink-0 ${size}`}>
+              <Link
+                to="/watch"
+                search={{ type: m.type, id: m.id }}
+                className="block overflow-hidden rounded-xl border border-border bg-card transition hover:-translate-y-1 hover:border-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <Poster title={m.title} className="aspect-[2/3] transition group-hover:brightness-110" />
+                <div className="p-2.5">
+                  <p className="truncate text-sm font-semibold">{m.title}</p>
+                  <p className="text-xs text-muted-foreground">{m.type === "tv" ? "Series" : m.type === "anime" ? "Anime" : "Movie"} · {m.year}</p>
+                </div>
+              </Link>
+              <button
+                aria-label={saved ? "Remove from watchlist" : "Add to watchlist"}
+                onClick={() => onToggle(k)}
+                className="absolute right-2 top-2 grid h-7 w-7 place-items-center rounded-full bg-background/80 opacity-0 transition group-hover:opacity-100 focus-visible:opacity-100"
+              >
+                {saved ? <BookmarkCheck className="h-3.5 w-3.5 text-primary" /> : <Bookmark className="h-3.5 w-3.5" />}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
 }
 
-const typeLabel = { movie: "Movie", tv: "Series", anime: "Anime" } as const;
+function HomePage() {
+  const [settings, update] = useSettings();
+  useBackground(settings);
+  const { history, remove, clear } = useHistory();
+  const { list: wl, toggle } = useWatchlist();
+  const nav = useNavigate();
+  const [q, setQ] = useState("");
+  const [svc, setSvc] = useState<string>(SERVICES[0]);
+  const [type, setType] = useState<"all" | "movie" | "tv" | "anime">("all");
+  const size = sizes[settings.cardSize];
 
-function PlayerPage() {
-  const [settings, updateSettings] = useSettings();
-  const { history, save, remove, clear } = useHistory();
-  const [current, setCurrent] = useState<Current>({ media: SAMPLE_CATALOG[0], season: 1, episode: 1, startAt: 0 });
-  const [live, setLive] = useState<{ status: string; time: number; duration: number }>({ status: "idle", time: 0, duration: 0 });
-  const lastSave = useRef(0);
-
-  // Apply the accent globally so popovers and sheets pick it up too.
-  useEffect(() => {
-    document.documentElement.style.setProperty("--primary", settings.accent);
-  }, [settings.accent]);
-
-  const { media, season, episode } = current;
-  const key = titleKey(media.type, media.id);
-  const episodeCount = media.seasons?.[media.type === "tv" ? season - 1 : 0] ?? 1;
-
-  const open = useCallback(
-    (m: MediaItem, s?: number, e?: number) => {
-      const saved = history.find((h) => h.key === titleKey(m.type, m.id));
-      const sameEp = saved && (s === undefined || (saved.season === s && saved.episode === e));
-      setCurrent({
-        media: m,
-        season: s ?? saved?.season ?? 1,
-        episode: e ?? saved?.episode ?? 1,
-        startAt: settings.resume && sameEp && saved ? saved.currentTime : 0,
-      });
-      setLive({ status: "idle", time: 0, duration: 0 });
-      window.scrollTo({ top: 0, behavior: "smooth" });
-    },
-    [history, settings.resume],
-  );
-
-  const openById = (type: MediaType, id: number) => open(findMedia(type, id) ?? fallbackMedia(type, id));
-
-  const goEpisode = (s: number, e: number) => setCurrent((c) => ({ ...c, season: s, episode: e, startAt: 0 }));
-
-  const next = useMemo(() => {
-    if (media.type === "movie") return null;
-    if (episode < episodeCount) return { s: season, e: episode + 1 };
-    if (media.type === "tv" && media.seasons && season < media.seasons.length) return { s: season + 1, e: 1 };
-    return null;
-  }, [media, season, episode, episodeCount]);
-  const prev = media.type !== "movie" && episode > 1 ? { s: season, e: episode - 1 } : null;
-
-  const src = useMemo(
+  const seen = history.map((h) => h.key);
+  const because = useMemo(
     () =>
-      buildEmbedUrl(
-        { type: media.type, id: media.id, season, episode },
-        {
-          color: settings.accent,
-          progress: current.startAt,
-          autoplay: settings.autoplay,
-          nextEpisode: settings.nextEpisode,
-          episodeSelector: settings.episodeSelector,
-          autoplayNextEpisode: settings.autoplayNextEpisode,
-        },
-      ),
-    // startAt is only read when the title/episode changes
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [media, season, episode, settings.accent, settings.autoplay, settings.nextEpisode, settings.episodeSelector, settings.autoplayNextEpisode],
+      history.slice(0, 3).flatMap((h: ProgressEntry) => {
+        const base = findMedia(h.type, h.id);
+        if (!base) return [];
+        const r = similarTo(base, 12, seen);
+        return r.length ? [{ base, r }] : [];
+      }),
+    [history], // eslint-disable-line react-hooks/exhaustive-deps
   );
+  const hero = byTrending()[0];
+  const filter = (l: MediaItem[]) => (type === "all" ? l : l.filter((m) => m.type === type));
+  const results = q.trim() ? filter(searchCatalog(q)) : [];
+  const rowProps = { size, wl, onToggle: toggle };
+  const watchlist = wl.map((k) => SAMPLE_CATALOG.find((m) => titleKey(m.type, m.id) === k)).filter(Boolean) as MediaItem[];
 
-  const handleEvent = useCallback(
-    (ev: PlayerEvent) => {
-      setLive({ status: ev.event, time: ev.currentTime, duration: ev.duration });
-      const now = Date.now();
-      if (ev.event === "timeupdate" && now - lastSave.current < 5000) return;
-      lastSave.current = now;
-      const entry: ProgressEntry = {
-        key,
-        type: media.type,
-        id: media.id,
-        title: media.title,
-        season: media.type === "tv" ? season : undefined,
-        episode: media.type === "movie" ? undefined : episode,
-        currentTime: ev.event === "ended" ? 0 : ev.currentTime,
-        duration: ev.duration,
-        updatedAt: now,
-      };
-      if (ev.event === "ended" && media.type === "movie") remove(key);
-      else if (ev.currentTime > 5 || ev.event === "ended") save(entry);
-      if (ev.event === "ended" && next && !settings.autoplayNextEpisode) {
-        toast("Episode finished", { action: { label: "Next episode", onClick: () => goEpisode(next.s, next.e) } });
-      }
-    },
-    [key, media, season, episode, next, save, remove, settings.autoplayNextEpisode],
-  );
-
-  const pickHistory = (h: ProgressEntry) => {
-    const m = findMedia(h.type, h.id) ?? { ...fallbackMedia(h.type, h.id), title: h.title };
-    open(m, h.season ?? 1, h.episode ?? 1);
-  };
-
-  const fmt = (t: number) => {
-    const s = Math.floor(t);
-    const h = Math.floor(s / 3600);
-    const m = Math.floor((s % 3600) / 60);
-    return `${h ? `${h}:` : ""}${String(m).padStart(h ? 2 : 1, "0")}:${String(s % 60).padStart(2, "0")}`;
+  const open = (h: ProgressEntry) => nav({ to: "/watch", search: { type: h.type, id: h.id } });
+  const surprise = () => {
+    const m = SAMPLE_CATALOG[Math.floor(Math.random() * SAMPLE_CATALOG.length)];
+    nav({ to: "/watch", search: { type: m.type, id: m.id } });
   };
 
   return (
     <div className="min-h-screen">
-      <header className="sticky top-0 z-30 border-b border-border bg-background/80 backdrop-blur-xl">
-        <div className="mx-auto grid max-w-7xl grid-cols-[minmax(0,1fr)_auto] items-center gap-4 px-4 py-3 sm:px-6">
-          <div className="flex min-w-0 items-center gap-2">
-            <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground">
-              <Clapperboard className="h-4 w-4" />
+      <AppHeader settings={settings} update={update} />
+      <main className="mx-auto max-w-7xl space-y-10 px-4 py-6 sm:px-6 lg:py-10">
+        <section className="relative overflow-hidden rounded-3xl border border-border bg-card p-6 sm:p-10 shadow-glow">
+          <div className="bg-poster absolute inset-0 opacity-60" />
+          <div className="relative max-w-xl space-y-4">
+            <p className="text-xs font-semibold uppercase tracking-widest text-primary">Trending now</p>
+            <h1 className="text-3xl font-bold sm:text-5xl">{hero.title}</h1>
+            <p className="line-clamp-3 text-sm text-muted-foreground sm:text-base">{hero.overview}</p>
+            <div className="flex flex-wrap gap-2">
+              <Link to="/watch" search={{ type: hero.type, id: hero.id }} className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground hover:brightness-110">
+                <Play className="h-4 w-4 fill-current" /> Watch now
+              </Link>
+              <button onClick={surprise} className="inline-flex items-center gap-2 rounded-full border border-border bg-background/60 px-5 py-2.5 text-sm font-medium hover:bg-accent">
+                <Shuffle className="h-4 w-4" /> Surprise me
+              </button>
             </div>
-            <span className="truncate font-display text-lg font-bold tracking-tight">Reel</span>
           </div>
-          <SettingsSheet settings={settings} update={updateSettings} />
-        </div>
-      </header>
+        </section>
 
-      <main className="mx-auto max-w-7xl space-y-12 px-4 py-6 sm:px-6 lg:py-10">
-        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_340px]">
-          <div className="min-w-0 space-y-4">
-            <VidyPlayer src={src} title={media.title} onEvent={handleEvent} />
-
-            {media.type !== "movie" && (
-              <div className="flex flex-wrap items-center gap-2">
-                {media.type === "tv" && media.seasons && (
-                  <Select value={String(season)} onValueChange={(v) => goEpisode(Number(v), 1)}>
-                    <SelectTrigger aria-label="Season" className="w-32 rounded-full bg-card"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      {media.seasons.map((_, i) => (
-                        <SelectItem key={i} value={String(i + 1)}>Season {i + 1}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                )}
-                <Select value={String(episode)} onValueChange={(v) => goEpisode(season, Number(v))}>
-                  <SelectTrigger aria-label="Episode" className="w-36 rounded-full bg-card"><SelectValue /></SelectTrigger>
-                  <SelectContent className="max-h-72">
-                    {Array.from({ length: Math.min(episodeCount, 2000) }, (_, i) => (
-                      <SelectItem key={i} value={String(i + 1)}>Episode {i + 1}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <div className="ml-auto flex gap-2">
-                  <button
-                    disabled={!prev}
-                    onClick={() => prev && goEpisode(prev.s, prev.e)}
-                    className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-4 py-2 text-sm font-medium transition hover:bg-accent disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  >
-                    <ChevronLeft className="h-4 w-4" /> Prev
-                  </button>
-                  <button
-                    disabled={!next}
-                    onClick={() => next && goEpisode(next.s, next.e)}
-                    className="inline-flex items-center gap-1 rounded-full bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition hover:brightness-110 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  >
-                    Next <ChevronRight className="h-4 w-4" />
-                  </button>
-                </div>
-              </div>
-            )}
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="relative min-w-0 flex-1 sm:max-w-md">
+            <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search titles or genres" aria-label="Search"
+              className="w-full rounded-full border border-input bg-background/80 py-2.5 pl-10 pr-4 text-sm outline-none focus:border-primary" />
+          </label>
+          <div role="radiogroup" aria-label="Type" className="flex gap-1 rounded-full bg-muted p-1">
+            {(["all", "movie", "tv", "anime"] as const).map((t) => (
+              <button key={t} role="radio" aria-checked={type === t} onClick={() => setType(t)}
+                className="rounded-full px-3 py-1.5 text-xs font-semibold capitalize text-muted-foreground aria-checked:bg-primary aria-checked:text-primary-foreground">
+                {t === "tv" ? "Series" : t}
+              </button>
+            ))}
           </div>
-
-          <aside className="space-y-4">
-            <div key={key + season + episode} className="animate-reel rounded-2xl border border-border bg-card p-5">
-              <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
-                <span className="rounded-full bg-primary/15 px-2.5 py-1 font-semibold text-primary">{typeLabel[media.type]}</span>
-                {media.year > 0 && <span className="text-muted-foreground">{media.year}</span>}
-                {media.type !== "movie" && (
-                  <span className="text-muted-foreground">
-                    {media.type === "tv" ? `S${season} · ` : ""}E{episode}
-                  </span>
-                )}
-              </div>
-              <h1 className="text-2xl font-bold leading-tight">{media.title}</h1>
-              {media.genres.length > 0 && (
-                <p className="mt-1 text-sm text-muted-foreground">{media.genres.join(" · ")}</p>
-              )}
-              <p className="mt-4 text-sm leading-relaxed text-muted-foreground">{media.overview}</p>
-              <div className="mt-5 border-t border-border pt-4">
-                <div className="mb-2 flex justify-between text-xs text-muted-foreground">
-                  <span className="capitalize">{live.status === "idle" ? "Waiting for playback" : live.status === "timeupdate" ? "Playing" : live.status}</span>
-                  {live.duration > 0 && <span>{fmt(live.time)} / {fmt(live.duration)}</span>}
-                </div>
-                <div className="h-1.5 overflow-hidden rounded-full bg-muted">
-                  <div className="h-full bg-primary transition-all" style={{ width: `${live.duration ? (live.time / live.duration) * 100 : 0}%` }} />
-                </div>
-              </div>
-            </div>
-            <div>
-              <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-muted-foreground">Play by ID</p>
-              <MediaPicker onSubmit={openById} />
-            </div>
-          </aside>
         </div>
 
-        <ContinueWatching items={history} onPick={pickHistory} onRemove={remove} onClear={clear} />
-        <Library items={SAMPLE_CATALOG} onPick={(m) => open(m)} activeKey={key} />
+        {q.trim() ? (
+          results.length ? <Row title={`Results for "${q}"`} items={results} {...rowProps} /> : <p className="text-sm text-muted-foreground">No matches in the library. Try the Player page to play by TMDB ID.</p>
+        ) : (
+          <>
+            <ContinueWatching items={history} onPick={open} onRemove={remove} onClear={clear} />
+            {because.map(({ base, r }) => (
+              <Row key={base.id} title={`Because you watched ${base.title}`} items={filter(r)} {...rowProps} />
+            ))}
+            <Row title="My list" items={filter(watchlist)} {...rowProps} />
+            <Row title="Trending today" items={filter(byTrending()).slice(0, 12)} {...rowProps} />
+            <Row title="Most popular" items={filter(byPopular()).slice(0, 12)} {...rowProps} />
+            <section>
+              <div className="mb-3 flex flex-wrap items-center gap-2">
+                <h2 className="mr-2 text-lg font-semibold">Available on</h2>
+                {SERVICES.map((s) => (
+                  <button key={s} aria-pressed={svc === s} onClick={() => setSvc(s)}
+                    className="rounded-full border border-border px-3 py-1 text-xs font-semibold text-muted-foreground aria-pressed:border-primary aria-pressed:bg-primary aria-pressed:text-primary-foreground">
+                    {s}
+                  </button>
+                ))}
+              </div>
+              <Row title="" items={filter(onService(svc))} {...rowProps} />
+            </section>
+            <Row title="Trending anime" items={byTrending().filter((m) => m.type === "anime")} {...rowProps} />
+            <Row title="Binge-worthy series" items={ofType("tv")} {...rowProps} />
+            <Row title="Movie night" items={ofType("movie")} {...rowProps} />
+          </>
+        )}
 
         <footer className="border-t border-border pt-6 text-xs text-muted-foreground">
-          Playback is provided by the Vidy embed. Only watch content you're authorised to access.
+          PriView · Library data is sample data until a TMDB key is connected. Only watch content you're authorised to access.
         </footer>
       </main>
     </div>

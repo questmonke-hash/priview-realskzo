@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useCallback, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Clapperboard } from "lucide-react";
 import { toast } from "sonner";
 import { VidyPlayer } from "@/components/player/VidyPlayer";
@@ -40,6 +40,11 @@ function PlayerPage() {
   const [current, setCurrent] = useState<Current>({ media: SAMPLE_CATALOG[0], season: 1, episode: 1, startAt: 0 });
   const [live, setLive] = useState<{ status: string; time: number; duration: number }>({ status: "idle", time: 0, duration: 0 });
   const lastSave = useRef(0);
+
+  // Apply the accent globally so popovers and sheets pick it up too.
+  useEffect(() => {
+    document.documentElement.style.setProperty("--primary", settings.accent);
+  }, [settings.accent]);
 
   const { media, season, episode } = current;
   const key = titleKey(media.type, media.id);
@@ -130,7 +135,7 @@ function PlayerPage() {
   };
 
   return (
-    <div style={{ "--primary": settings.accent } as CSSProperties} className="min-h-screen">
+    <div className="min-h-screen">
       <header className="sticky top-0 z-30 border-b border-border bg-background/80 backdrop-blur-xl">
         <div className="mx-auto grid max-w-7xl grid-cols-[minmax(0,1fr)_auto] items-center gap-4 px-4 py-3 sm:px-6">
           <div className="flex min-w-0 items-center gap-2">

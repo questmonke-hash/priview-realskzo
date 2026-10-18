@@ -8,3 +8,6 @@
 > Commits you push to the connected branch sync back to Lovable and show up in
 > the editor, so keep the branch in a working state.
 <!-- LOVABLE:END -->
+
+- Vidy embed URLs and postMessage parsing live only in src/lib/vidy.ts (with tests); components never build URLs by hand — keeps the player tied to the documented API.
+- Preferences and watch progress are stored in localStorage via src/lib/store.ts — initial version has no backend.
